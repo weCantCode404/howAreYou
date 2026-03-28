@@ -22,15 +22,12 @@ import {
 } from "@/components/ui/dropdown-menu";
 import AppSidebar from "@/components/AppSidebar";
 import AIAnimation from "@/components/AIAnimation";
-import WaveAnimation from "@/components/WaveAnimation";
 import TypingIndicator from "@/components/TypingIndicator";
 import { useAudioRecorder } from "@/hooks/useAudioRecorder";
 
 const LANGUAGES = [
   { code: "en", label: "English" },
   { code: "tw", label: "Twi" },
-  { code: "ee", label: "Ewe" },
-  { code: "ga", label: "Ga" },
 ];
 
 function getGreeting() {
@@ -62,13 +59,17 @@ export default function Dashboard() {
   const [isAiTyping, setIsAiTyping] = useState(false);
   const [conversationDone, setConversationDone] = useState(false);
   const [showSummary, setShowSummary] = useState(false);
+  const [twiExchangeCount, setTwiExchangeCount] = useState(0);
 
   const audioPlayerRef = useRef(null);
   const inputRef = useRef(null);
   const chatInputRef = useRef(null);
   const chatEndRef = useRef(null);
   const sidebarRef = useRef(null);
+  const recognitionRef = useRef(null);
   const { isRecording, error: micError, startRecording, stopRecording } = useAudioRecorder();
+
+  const isTwi = language === "tw";
 
   useEffect(() => {
     const token = localStorage.getItem("wc_token");
@@ -93,6 +94,13 @@ export default function Dashboard() {
     }
   }, [view, isAiTyping, chatMessages]);
 
+  useEffect(() => {
+    return () => {
+      recognitionRef.current?.abort();
+      window.speechSynthesis?.cancel();
+    };
+  }, []);
+
   const resetToIdle = useCallback(() => {
     setView(VIEW_IDLE);
     setAiResponse(null);
@@ -103,6 +111,8 @@ export default function Dashboard() {
     setIsAiTyping(false);
     setConversationDone(false);
     setShowSummary(false);
+    setTwiExchangeCount(0);
+    window.speechSynthesis?.cancel();
   }, []);
 
   const handleCloseSummary = useCallback(() => {
@@ -120,6 +130,14 @@ export default function Dashboard() {
     localStorage.removeItem("wc_user_id");
     router.replace("/");
   };
+
+  const speakText = useCallback((text) => {
+    if (!window.speechSynthesis) return;
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = "en-GH";
+    window.speechSynthesis.speak(utterance);
+  }, []);
 
   const sendTextToBackend = useCallback(async (text, history) => {
     const res = await fetch("/api/checkin", {
@@ -170,22 +188,23 @@ export default function Dashboard() {
     return { responseText, done, serverHistory };
   }, [userId, username, language]);
 
-  // ── Text check-in (first message) ─────────────────────────────
-  const handleSendText = useCallback(async () => {
-    const trimmed = message.trim();
-    if (!trimmed) return;
+  const sendChatMessage = useCallback(async (text, isFirstMessage, shouldSpeak) => {
+    const userMsg = { role: "user", content: text };
 
-    const userMsg = { role: "user", content: trimmed };
-    setChatMessages([userMsg]);
+    if (isFirstMessage) {
+      setChatMessages([userMsg]);
+      setConversationDone(false);
+    } else {
+      setChatMessages((prev) => [...prev, userMsg]);
+    }
+
     setMessage("");
     setError(null);
     setView(VIEW_CHAT);
     setIsAiTyping(true);
-    setConversationDone(false);
 
     try {
-      const { responseText, done, serverHistory } = await sendTextToBackend(trimmed, conversationHistory);
-
+      const { responseText, done, serverHistory } = await sendTextToBackend(text, conversationHistory);
       const assistantMsg = { role: "assistant", content: responseText };
 
       if (Array.isArray(serverHistory) && serverHistory.length > 0) {
@@ -197,44 +216,25 @@ export default function Dashboard() {
       setChatMessages((prev) => [...prev, assistantMsg]);
       setConversationDone(done);
       if (done) setShowSummary(true);
+      if (shouldSpeak) speakText(responseText);
     } catch (err) {
       setError(err.message);
     } finally {
       setIsAiTyping(false);
     }
-  }, [message, conversationHistory, sendTextToBackend]);
+  }, [conversationHistory, sendTextToBackend, speakText]);
 
-  // ── Chat follow-up messages ────────────────────────────────────
-  const handleSendReply = useCallback(async () => {
+  const handleSendText = useCallback(() => {
+    const trimmed = message.trim();
+    if (!trimmed) return;
+    sendChatMessage(trimmed, view !== VIEW_CHAT, false);
+  }, [message, view, sendChatMessage]);
+
+  const handleSendReply = useCallback(() => {
     const trimmed = message.trim();
     if (!trimmed || isAiTyping) return;
-
-    const userMsg = { role: "user", content: trimmed };
-    setChatMessages((prev) => [...prev, userMsg]);
-    setMessage("");
-    setError(null);
-    setIsAiTyping(true);
-
-    try {
-      const { responseText, done, serverHistory } = await sendTextToBackend(trimmed, conversationHistory);
-
-      const assistantMsg = { role: "assistant", content: responseText };
-
-      if (Array.isArray(serverHistory) && serverHistory.length > 0) {
-        setConversationHistory(serverHistory);
-      } else {
-        setConversationHistory((prev) => [...prev, userMsg, assistantMsg]);
-      }
-
-      setChatMessages((prev) => [...prev, assistantMsg]);
-      setConversationDone(done);
-      if (done) setShowSummary(true);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setIsAiTyping(false);
-    }
-  }, [message, isAiTyping, conversationHistory, sendTextToBackend]);
+    sendChatMessage(trimmed, false, false);
+  }, [message, isAiTyping, sendChatMessage]);
 
   const handleKeyDown = (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -247,8 +247,62 @@ export default function Dashboard() {
     }
   };
 
-  // ── Voice check-in ─────────────────────────────────────────────
-  const handleMicClick = useCallback(async () => {
+  // ── English Voice (Browser SpeechRecognition) ─────────────
+  const startEnglishVoice = useCallback(() => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      setError("Voice recognition isn't supported in this browser. Try Chrome or Edge.");
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = "en-GH";
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+    recognitionRef.current = recognition;
+
+    setView(VIEW_LISTENING);
+    setError(null);
+
+    recognition.onresult = (event) => {
+      const transcript = event.results[0][0].transcript;
+      recognitionRef.current = null;
+      const isFirst = chatMessages.length === 0;
+      sendChatMessage(transcript, isFirst, true);
+    };
+
+    recognition.onerror = (event) => {
+      recognitionRef.current = null;
+      if (event.error === "no-speech") {
+        setError("I didn't catch that. Try again?");
+      } else if (event.error === "not-allowed") {
+        setError("Microphone access denied. Please allow microphone permissions.");
+      } else {
+        setError("Something went wrong with voice recognition. Try again?");
+      }
+      setView(chatMessages.length > 0 ? VIEW_CHAT : VIEW_IDLE);
+    };
+
+    recognition.onend = () => {
+      if (recognitionRef.current) {
+        recognitionRef.current = null;
+        setView(chatMessages.length > 0 ? VIEW_CHAT : VIEW_IDLE);
+      }
+    };
+
+    recognition.start();
+  }, [chatMessages, sendChatMessage]);
+
+  const stopEnglishVoice = useCallback(() => {
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+      recognitionRef.current = null;
+      setView(chatMessages.length > 0 ? VIEW_CHAT : VIEW_IDLE);
+    }
+  }, [chatMessages]);
+
+  // ── Twi Voice (MediaRecorder → /api/checkin-voice) ────────
+  const handleTwiMicClick = useCallback(async () => {
     if (view === VIEW_LISTENING) {
       const blob = await stopRecording();
       if (!blob) return;
@@ -259,7 +313,7 @@ export default function Dashboard() {
       try {
         const formData = new FormData();
         formData.append("user_id", userId);
-        formData.append("language", language);
+        formData.append("language", "tw");
         formData.append("audio", blob, "recording.webm");
         formData.append("username", username);
         formData.append("conversation_history", JSON.stringify(conversationHistory));
@@ -277,12 +331,29 @@ export default function Dashboard() {
           const audioBlob = await res.blob();
           const url = URL.createObjectURL(audioBlob);
           setAudioSrc(url);
+          setTwiExchangeCount((c) => c + 1);
           setView(VIEW_RESPONSE);
         } else {
           const data = await res.json();
-          const responseText = typeof data === "string" ? data : data.response || data.message || JSON.stringify(data);
-          setAiResponse(responseText);
-          setView(VIEW_RESPONSE);
+
+          if (Array.isArray(data.conversation_history)) {
+            setConversationHistory(data.conversation_history);
+          }
+
+          if (data.audio_response_base64) {
+            const audioUrl = `data:audio/wav;base64,${data.audio_response_base64}`;
+            setAudioSrc(audioUrl);
+            setTwiExchangeCount((c) => c + 1);
+            setView(VIEW_RESPONSE);
+          } else {
+            const responseText =
+              typeof data === "string"
+                ? data
+                : data.response || data.message || JSON.stringify(data);
+            setAiResponse(responseText);
+            setTwiExchangeCount((c) => c + 1);
+            setView(VIEW_RESPONSE);
+          }
         }
       } catch (err) {
         setError(err.message);
@@ -298,7 +369,18 @@ export default function Dashboard() {
     } catch {
       /* error is set by the hook */
     }
-  }, [view, userId, language, username, conversationHistory, startRecording, stopRecording]);
+  }, [view, userId, username, conversationHistory, startRecording, stopRecording]);
+
+  // ── Mic click dispatcher ──────────────────────────────────
+  const handleMicClick = useCallback(() => {
+    if (isTwi) {
+      handleTwiMicClick();
+    } else if (view === VIEW_LISTENING) {
+      stopEnglishVoice();
+    } else {
+      startEnglishVoice();
+    }
+  }, [isTwi, view, handleTwiMicClick, startEnglishVoice, stopEnglishVoice]);
 
   useEffect(() => {
     if (audioSrc && audioPlayerRef.current) {
@@ -306,14 +388,27 @@ export default function Dashboard() {
     }
   }, [audioSrc]);
 
-  const handleAudioEnded = () => {
+  const handleAudioEnded = useCallback(() => {
     if (audioSrc) URL.revokeObjectURL(audioSrc);
+    setAudioSrc(null);
+    setAiResponse(null);
+
+    if (isTwi) {
+      setView(VIEW_IDLE);
+    } else {
+      resetToIdle();
+    }
+  }, [audioSrc, isTwi, resetToIdle]);
+
+  useEffect(() => {
     resetToIdle();
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [language]);
 
   if (!ready) return null;
 
   const selectedLang = LANGUAGES.find((l) => l.code === language);
+  const hasTwiConversation = isTwi && twiExchangeCount > 0;
 
   return (
     <SidebarProvider defaultOpen={true}>
@@ -345,13 +440,13 @@ export default function Dashboard() {
           </div>
 
           <div className="flex items-center gap-2">
-            {view === VIEW_CHAT && !showSummary && (
+            {((view === VIEW_CHAT && !showSummary) || hasTwiConversation) && (
               <button
                 onClick={handleEndChat}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium text-primary hover:bg-primary/10 transition-colors"
               >
                 <Plus size={14} />
-                New check-in
+                New chat
               </button>
             )}
 
@@ -397,55 +492,84 @@ export default function Dashboard() {
                 {getGreeting()}, {username || "there"}
               </h1>
               <p className="text-lg sm:text-xl text-text-secondary">
-                How Can I{" "}
-                <span className="text-primary font-semibold">Assist You Today?</span>
+                How are you{" "}
+                <span className="text-primary font-semibold">doing today?</span>
               </p>
             </div>
 
-            {/* Text input bar */}
-            <div className="w-full relative mt-4">
-              <div className="relative bg-surface-elevated border border-border-default rounded-2xl shadow-card overflow-hidden transition-shadow focus-within:shadow-lift focus-within:border-primary/30">
-                <textarea
-                  ref={inputRef}
-                  value={message}
-                  onChange={(e) => setMessage(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  placeholder="Initiate a query or send a command to the AI..."
-                  rows={3}
-                  className="w-full resize-none bg-transparent px-5 pt-4 pb-14 text-sm text-dark placeholder:text-text-muted focus:outline-none"
-                />
-                <div className="absolute bottom-3 left-3 right-3 flex items-center justify-between">
-                  <div />
-                  <div className="flex items-center gap-2">
-                    {message.trim() && (
+            {isTwi ? (
+              <div className="flex flex-col items-center gap-4 mt-4">
+                {hasTwiConversation && (
+                  <p className="text-sm text-text-muted">
+                    {twiExchangeCount} voice exchange{twiExchangeCount !== 1 ? "s" : ""}
+                  </p>
+                )}
+                <button
+                  onClick={handleMicClick}
+                  className="p-5 rounded-full bg-primary text-white hover:bg-primary-hover transition-all shadow-lg hover:shadow-xl"
+                  aria-label="Start voice recording"
+                >
+                  <Mic size={28} />
+                </button>
+                <p className="text-sm text-text-muted">
+                  {hasTwiConversation ? "Tap to say more" : "Tap to start talking"}
+                </p>
+                {hasTwiConversation && (
+                  <button
+                    onClick={() => {
+                      resetToIdle();
+                      sidebarRef.current?.refresh();
+                    }}
+                    className="text-sm text-text-secondary hover:text-dark font-medium transition-colors"
+                  >
+                    I&apos;m done
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="w-full relative mt-4">
+                <div className="relative bg-surface-elevated border border-border-default rounded-2xl shadow-card overflow-hidden transition-shadow focus-within:shadow-lift focus-within:border-primary/30">
+                  <textarea
+                    ref={inputRef}
+                    value={message}
+                    onChange={(e) => setMessage(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    placeholder="What's on your mind?"
+                    rows={3}
+                    className="w-full resize-none bg-transparent px-5 pt-4 pb-14 text-sm text-dark placeholder:text-text-muted focus:outline-none"
+                  />
+                  <div className="absolute bottom-3 left-3 right-3 flex items-center justify-between">
+                    <div />
+                    <div className="flex items-center gap-2">
+                      {message.trim() && (
+                        <button
+                          onClick={handleSendText}
+                          className="p-2 rounded-xl bg-primary text-white hover:bg-primary-hover transition-colors"
+                          aria-label="Send message"
+                        >
+                          <Send size={16} />
+                        </button>
+                      )}
                       <button
-                        onClick={handleSendText}
-                        className="p-2 rounded-xl bg-primary text-white hover:bg-primary-hover transition-colors"
-                        aria-label="Send message"
+                        onClick={handleMicClick}
+                        className="p-2.5 rounded-xl bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+                        aria-label="Start voice recording"
                       >
-                        <Send size={16} />
+                        <Mic size={18} />
                       </button>
-                    )}
-                    <button
-                      onClick={handleMicClick}
-                      className="p-2.5 rounded-xl bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
-                      aria-label="Start voice recording"
-                    >
-                      <Mic size={18} />
-                    </button>
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
+            )}
           </div>
 
-          {/* ── CHAT VIEW ──────────────────────────────────────── */}
+          {/* ── CHAT VIEW (English) ────────────────────────────── */}
           <div
             className={`flex flex-col w-full h-full max-w-2xl transition-all duration-200 ease-out ${
               view === VIEW_CHAT ? "opacity-100" : "opacity-0 pointer-events-none absolute"
             }`}
           >
-            {/* Messages thread */}
             <div className="flex-1 overflow-y-auto py-4 space-y-3 min-h-0">
               {chatMessages.map((msg, i) => (
                 <div
@@ -473,7 +597,6 @@ export default function Dashboard() {
               <div ref={chatEndRef} />
             </div>
 
-            {/* Chat input */}
             {!conversationDone && !showSummary && (
               <div className="shrink-0 pb-4 pt-2">
                 <div className="relative bg-surface-elevated border border-border-default rounded-2xl shadow-card overflow-hidden transition-shadow focus-within:shadow-lift focus-within:border-primary/30">
@@ -497,52 +620,16 @@ export default function Dashboard() {
                         <Send size={16} />
                       </button>
                     )}
+                    {!isAiTyping && (
+                      <button
+                        onClick={handleMicClick}
+                        className="p-2.5 rounded-xl bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+                        aria-label="Use voice"
+                      >
+                        <Mic size={18} />
+                      </button>
+                    )}
                   </div>
-                </div>
-              </div>
-            )}
-
-            {/* ── Summary overlay card ───────────────────────── */}
-            {showSummary && (
-              <div className="absolute inset-0 z-20 flex items-center justify-center bg-dark/30 backdrop-blur-sm animate-in fade-in duration-200">
-                <div className="w-full max-w-sm mx-4 bg-surface-elevated border border-border-default rounded-2xl shadow-lift p-6 space-y-4 animate-in zoom-in-95 duration-200">
-                  <div className="flex items-start justify-between">
-                    <div className="flex items-center gap-2.5">
-                      <div className="w-10 h-10 rounded-xl bg-primary-muted flex items-center justify-center">
-                        <MessageSquare size={20} className="text-primary" />
-                      </div>
-                      <div>
-                        <h3 className="text-sm font-semibold text-dark">Check-in Complete</h3>
-                        <div className="flex items-center gap-1.5 mt-0.5">
-                          <Clock size={12} className="text-text-muted" />
-                          <span className="text-xs text-text-muted">Just now</span>
-                        </div>
-                      </div>
-                    </div>
-                    <button
-                      onClick={handleCloseSummary}
-                      className="p-1.5 rounded-lg text-text-muted hover:text-dark hover:bg-background transition-colors"
-                      aria-label="Close summary"
-                    >
-                      <X size={16} />
-                    </button>
-                  </div>
-
-                  <div className="bg-background rounded-xl p-3.5 space-y-2">
-                    <p className="text-sm font-medium text-dark leading-snug line-clamp-2">
-                      {chatMessages.find((m) => m.role === "user")?.content || "Conversation"}
-                    </p>
-                    <p className="text-xs text-text-muted">
-                      {chatMessages.length} message{chatMessages.length !== 1 ? "s" : ""} exchanged
-                    </p>
-                  </div>
-
-                  <button
-                    onClick={handleCloseSummary}
-                    className="w-full py-2.5 rounded-xl bg-primary text-white text-sm font-medium hover:bg-primary-hover transition-colors"
-                  >
-                    Done
-                  </button>
                 </div>
               </div>
             )}
@@ -557,7 +644,7 @@ export default function Dashboard() {
             <AIAnimation isAnimating={true} className="w-40 h-40" />
 
             <p className="text-text-secondary text-sm animate-pulse">
-              Listening...
+              I&apos;m listening...
             </p>
 
             <button
@@ -569,20 +656,20 @@ export default function Dashboard() {
             </button>
           </div>
 
-          {/* ── PROCESSING VIEW (voice only) ───────────────────── */}
+          {/* ── PROCESSING VIEW ────────────────────────────────── */}
           <div
             className={`flex flex-col items-center gap-6 w-full max-w-md transition-all duration-200 ease-out ${
               view === VIEW_PROCESSING ? "opacity-100 scale-100" : "opacity-0 scale-95 pointer-events-none absolute"
             }`}
           >
-            <WaveAnimation className="w-48 h-48" />
+            <AIAnimation isAnimating={true} className="w-40 h-40" />
 
             <p className="text-text-secondary text-sm">
-              Processing your message...
+              Give me a moment...
             </p>
           </div>
 
-          {/* ── RESPONSE VIEW (voice only) ─────────────────────── */}
+          {/* ── RESPONSE VIEW (Twi voice) ──────────────────────── */}
           <div
             className={`flex flex-col items-center gap-6 w-full max-w-2xl transition-all duration-200 ease-out ${
               view === VIEW_RESPONSE ? "opacity-100 scale-100" : "opacity-0 scale-95 pointer-events-none absolute"
@@ -590,8 +677,8 @@ export default function Dashboard() {
           >
             {audioSrc ? (
               <>
-                <WaveAnimation className="w-40 h-40" />
-                <p className="text-text-secondary text-sm">Speaking...</p>
+                <AIAnimation isAnimating={true} className="w-40 h-40" />
+                <p className="text-text-secondary text-sm">Talking to you...</p>
                 <audio
                   ref={audioPlayerRef}
                   src={audioSrc}
@@ -610,13 +697,90 @@ export default function Dashboard() {
               </>
             ) : null}
 
-            <button
-              onClick={resetToIdle}
-              className="text-sm text-primary hover:text-primary-hover font-medium transition-colors"
-            >
-              Start a new check-in
-            </button>
+            {!audioSrc && (
+              isTwi ? (
+                <div className="flex flex-col items-center gap-3">
+                  <button
+                    onClick={handleMicClick}
+                    className="p-4 rounded-full bg-primary text-white hover:bg-primary-hover transition-all shadow-lg"
+                    aria-label="Say more"
+                  >
+                    <Mic size={20} />
+                  </button>
+                  <p className="text-xs text-text-muted">Tap to say more</p>
+                  <button
+                    onClick={() => {
+                      resetToIdle();
+                      sidebarRef.current?.refresh();
+                    }}
+                    className="text-sm text-text-secondary hover:text-dark font-medium transition-colors"
+                  >
+                    I&apos;m done
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={resetToIdle}
+                  className="text-sm text-primary hover:text-primary-hover font-medium transition-colors"
+                >
+                  Start a new chat
+                </button>
+              )
+            )}
           </div>
+
+          {/* ── Summary overlay ─────────────────────────────────── */}
+          {showSummary && (
+            <div className="absolute inset-0 z-20 flex items-center justify-center bg-dark/30 backdrop-blur-sm animate-in fade-in duration-200">
+              <div className="w-full max-w-sm mx-4 bg-surface-elevated border border-border-default rounded-2xl shadow-lift p-6 space-y-4 animate-in zoom-in-95 duration-200">
+                <div className="flex items-start justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-10 h-10 rounded-xl bg-primary-muted flex items-center justify-center">
+                      <MessageSquare size={20} className="text-primary" />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-semibold text-dark">That&apos;s a wrap</h3>
+                      <div className="flex items-center gap-1.5 mt-0.5">
+                        <Clock size={12} className="text-text-muted" />
+                        <span className="text-xs text-text-muted">Just now</span>
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    onClick={handleCloseSummary}
+                    className="p-1.5 rounded-lg text-text-muted hover:text-dark hover:bg-background transition-colors"
+                    aria-label="Close summary"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+
+                <div className="bg-background rounded-xl p-3.5 space-y-2">
+                  {isTwi ? (
+                    <p className="text-sm font-medium text-dark leading-snug">
+                      {twiExchangeCount} voice exchange{twiExchangeCount !== 1 ? "s" : ""}
+                    </p>
+                  ) : (
+                    <>
+                      <p className="text-sm font-medium text-dark leading-snug line-clamp-2">
+                        {chatMessages.find((m) => m.role === "user")?.content || "Conversation"}
+                      </p>
+                      <p className="text-xs text-text-muted">
+                        {chatMessages.length} message{chatMessages.length !== 1 ? "s" : ""} exchanged
+                      </p>
+                    </>
+                  )}
+                </div>
+
+                <button
+                  onClick={handleCloseSummary}
+                  className="w-full py-2.5 rounded-xl bg-primary text-white text-sm font-medium hover:bg-primary-hover transition-colors"
+                >
+                  Done
+                </button>
+              </div>
+            </div>
+          )}
         </main>
       </SidebarInset>
     </SidebarProvider>

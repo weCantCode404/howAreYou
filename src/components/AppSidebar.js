@@ -78,9 +78,9 @@ export default memo(forwardRef(function AppSidebar({ userId, onSelectConversatio
       <SidebarHeader className="px-4 pt-5 pb-3">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center">
-            <span className="text-white text-sm font-bold">W</span>
+            <span className="text-white text-sm font-bold">H</span>
           </div>
-          <span className="text-base font-semibold text-dark">WellCheck</span>
+          <span className="text-base font-semibold text-dark">howRyou</span>
         </div>
       </SidebarHeader>
 
@@ -99,8 +99,8 @@ export default memo(forwardRef(function AppSidebar({ userId, onSelectConversatio
           </SidebarGroup>
         ) : grouped.length === 0 ? (
           <div className="px-4 py-8 text-center">
-            <p className="text-sm text-text-muted">No conversations yet</p>
-            <p className="text-xs text-text-muted mt-1">Start a check-in to begin</p>
+            <p className="text-sm text-text-muted">No chats yet</p>
+            <p className="text-xs text-text-muted mt-1">Say hi to get started</p>
           </div>
         ) : (
           grouped.map(([label, items]) => (
@@ -132,7 +132,7 @@ export default memo(forwardRef(function AppSidebar({ userId, onSelectConversatio
 
       <SidebarFooter className="px-4 py-3">
         <p className="text-xs text-text-muted text-center">
-          Powered by WellCheck GH
+          Powered by howRyou
         </p>
       </SidebarFooter>
     </Sidebar>

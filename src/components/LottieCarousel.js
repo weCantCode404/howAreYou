@@ -6,9 +6,9 @@ import dynamic from "next/dynamic";
 const Lottie = dynamic(() => import("lottie-react"), { ssr: false });
 
 const SLIDES = [
-  { src: "/assets/Levitate Meditate Peace and love.json", label: "Peace & Wellness" },
-  { src: "/assets/Doctor.json", label: "Doctor Support" },
-  { src: "/assets/health blue.json", label: "Health Monitoring" },
+  { src: "/assets/Levitate Meditate Peace and love.json", label: "Peace & Calm" },
+  { src: "/assets/Doctor.json", label: "We're Here for You" },
+  { src: "/assets/health blue.json", label: "Feel Better" },
 ];
 
 const INTERVAL_MS = 5000;

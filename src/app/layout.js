@@ -8,8 +8,8 @@ const inter = Inter({
 });
 
 export const metadata = {
-  title: "WellCheck GH",
-  description: "Your daily wellness companion",
+  title: "howRyou",
+  description: "Talk to someone who cares",
 };
 
 export default function RootLayout({ children }) {

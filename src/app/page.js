@@ -182,8 +182,8 @@ export default function Home() {
               {isLogin ? "Welcome" : "Create Account"}
             </h1>
             <p className="text-sm text-text-secondary leading-relaxed">
-              Simplify your wellness journey with{" "}
-              <span className="font-semibold text-dark">WellCheck GH</span>.
+              Take a moment to talk with{" "}
+              <span className="font-semibold text-dark">howRyou</span>.
               {isLogin
                 ? " Log in to continue."
                 : " Get started for free."}
@@ -300,10 +300,10 @@ export default function Home() {
 
           <div className="text-center space-y-2">
             <h2 className="text-xl font-semibold text-dark leading-snug">
-              Your daily wellness companion
+              Someone to talk to, whenever you need it
             </h2>
             <p className="text-sm text-text-secondary">
-              Powered by <span className="font-semibold text-primary">HowAreYou GH</span>
+              Powered by <span className="font-semibold text-primary">howRyou</span>
             </p>
           </div>
         </div>

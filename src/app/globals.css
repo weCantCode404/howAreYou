@@ -5,7 +5,7 @@
 @custom-variant dark (&:is(.dark *));
 
 /* ================================================================
-   WellCheck GH — Design System Tokens (Tailwind CSS v4)
+   howRyou — Design System Tokens (Tailwind CSS v4)
    ================================================================
    Source of truth for every color, shadow, radius, and font value.
    Tailwind v4 reads @theme {} and generates matching utility classes
@@ -103,7 +103,7 @@
   -webkit-backdrop-filter: blur(12px);
 }
 
-/* ── shadcn CSS variables mapped to WellCheck design system ───── */
+/* ── shadcn CSS variables mapped to howRyou design system ──────── */
 
 @theme inline {
   --font-heading: var(--font-sans);
