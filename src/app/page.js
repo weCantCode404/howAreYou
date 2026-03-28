@@ -125,8 +125,11 @@ export default function Home() {
       });
 
       if (res.ok) {
-        const token = await res.json();
+        const data = await res.json();
+        const token = typeof data === "string" ? data : data.token;
         localStorage.setItem("wc_token", token);
+        if (data.username) localStorage.setItem("wc_username", data.username);
+        if (data.user_id) localStorage.setItem("wc_user_id", data.user_id);
         router.push("/dashboard");
         return;
       }
