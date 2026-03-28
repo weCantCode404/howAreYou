@@ -303,7 +303,7 @@ export default function Home() {
               Your daily wellness companion
             </h2>
             <p className="text-sm text-text-secondary">
-              Powered by <span className="font-semibold text-primary">WellCheck GH</span>
+              Powered by <span className="font-semibold text-primary">HowAreYou GH</span>
             </p>
           </div>
         </div>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo, memo, forwardRef, useImperativeHandle } from "react";
 import { MessageSquare } from "lucide-react";
 import {
   Sidebar,
@@ -46,7 +46,7 @@ function getPreview(item) {
   );
 }
 
-export default function AppSidebar({ userId, onSelectConversation }) {
+export default memo(forwardRef(function AppSidebar({ userId, onSelectConversation }, ref) {
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -69,7 +69,9 @@ export default function AppSidebar({ userId, onSelectConversation }) {
     fetchHistory();
   }, [fetchHistory]);
 
-  const grouped = groupByDate(history);
+  useImperativeHandle(ref, () => ({ refresh: fetchHistory }), [fetchHistory]);
+
+  const grouped = useMemo(() => groupByDate(history), [history]);
 
   return (
     <Sidebar collapsible="offcanvas" className="border-r border-border-subtle">
@@ -135,4 +137,4 @@ export default function AppSidebar({ userId, onSelectConversation }) {
       </SidebarFooter>
     </Sidebar>
   );
-}
+}));

@@ -4,11 +4,14 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import {
   Mic,
-  MicOff,
   Send,
   LogOut,
   ChevronDown,
   Square,
+  Plus,
+  X,
+  MessageSquare,
+  Clock,
 } from "lucide-react";
 import { SidebarProvider, SidebarTrigger, SidebarInset } from "@/components/ui/sidebar";
 import {
@@ -20,6 +23,7 @@ import {
 import AppSidebar from "@/components/AppSidebar";
 import AIAnimation from "@/components/AIAnimation";
 import WaveAnimation from "@/components/WaveAnimation";
+import TypingIndicator from "@/components/TypingIndicator";
 import { useAudioRecorder } from "@/hooks/useAudioRecorder";
 
 const LANGUAGES = [
@@ -37,6 +41,7 @@ function getGreeting() {
 }
 
 const VIEW_IDLE = "idle";
+const VIEW_CHAT = "chat";
 const VIEW_LISTENING = "listening";
 const VIEW_PROCESSING = "processing";
 const VIEW_RESPONSE = "response";
@@ -53,9 +58,16 @@ export default function Dashboard() {
   const [audioSrc, setAudioSrc] = useState(null);
   const [error, setError] = useState(null);
   const [conversationHistory, setConversationHistory] = useState([]);
+  const [chatMessages, setChatMessages] = useState([]);
+  const [isAiTyping, setIsAiTyping] = useState(false);
+  const [conversationDone, setConversationDone] = useState(false);
+  const [showSummary, setShowSummary] = useState(false);
 
   const audioPlayerRef = useRef(null);
   const inputRef = useRef(null);
+  const chatInputRef = useRef(null);
+  const chatEndRef = useRef(null);
+  const sidebarRef = useRef(null);
   const { isRecording, error: micError, startRecording, stopRecording } = useAudioRecorder();
 
   useEffect(() => {
@@ -69,11 +81,37 @@ export default function Dashboard() {
     setReady(true);
   }, [router]);
 
+  useEffect(() => {
+    if (chatEndRef.current) {
+      chatEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [chatMessages, isAiTyping]);
+
+  useEffect(() => {
+    if (view === VIEW_CHAT && !isAiTyping && chatInputRef.current) {
+      chatInputRef.current.focus();
+    }
+  }, [view, isAiTyping, chatMessages]);
+
   const resetToIdle = useCallback(() => {
     setView(VIEW_IDLE);
     setAiResponse(null);
     setAudioSrc(null);
     setError(null);
+    setChatMessages([]);
+    setConversationHistory([]);
+    setIsAiTyping(false);
+    setConversationDone(false);
+    setShowSummary(false);
+  }, []);
+
+  const handleCloseSummary = useCallback(() => {
+    resetToIdle();
+    sidebarRef.current?.refresh();
+  }, [resetToIdle]);
+
+  const handleEndChat = useCallback(() => {
+    setShowSummary(true);
   }, []);
 
   const handleLogout = () => {
@@ -83,52 +121,129 @@ export default function Dashboard() {
     router.replace("/");
   };
 
-  // ── Text check-in ──────────────────────────────────────────────
+  const sendTextToBackend = useCallback(async (text, history) => {
+    const res = await fetch("/api/checkin", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        user_id: userId,
+        message: text,
+        username,
+        language,
+        conversation_history: history,
+      }),
+    });
+
+    if (!res.ok) throw new Error(`Server error (${res.status})`);
+
+    const data = await res.json();
+
+    let responseText;
+    if (typeof data === "string") {
+      responseText = data;
+    } else if (data.result) {
+      if (typeof data.result === "string") {
+        responseText = data.result;
+      } else {
+        const skip = new Set(["type", "crisis_flag"]);
+        for (const [key, val] of Object.entries(data.result)) {
+          if (!skip.has(key) && typeof val === "string" && val.trim()) {
+            responseText = val;
+            break;
+          }
+        }
+      }
+    }
+    if (!responseText) {
+      responseText = data.response || data.message || data.detail || "";
+    }
+
+    const resultType = data.result?.type;
+    const done =
+      resultType === "done" ||
+      resultType === "complete" ||
+      data.done === true ||
+      data.conversation_complete === true;
+
+    const serverHistory = data.conversation_history;
+
+    return { responseText, done, serverHistory };
+  }, [userId, username, language]);
+
+  // ── Text check-in (first message) ─────────────────────────────
   const handleSendText = useCallback(async () => {
     const trimmed = message.trim();
     if (!trimmed) return;
 
-    setView(VIEW_PROCESSING);
+    const userMsg = { role: "user", content: trimmed };
+    setChatMessages([userMsg]);
     setMessage("");
     setError(null);
+    setView(VIEW_CHAT);
+    setIsAiTyping(true);
+    setConversationDone(false);
 
     try {
-      const res = await fetch("/api/checkin", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          user_id: userId,
-          message: trimmed,
-          username,
-          language,
-          conversation_history: [],
-        }),
-      });
+      const { responseText, done, serverHistory } = await sendTextToBackend(trimmed, conversationHistory);
 
-    
-      if (!res.ok) throw new Error(`Server error (${res.status})`);
+      const assistantMsg = { role: "assistant", content: responseText };
 
-      const data = await res.json();
-      const responseText = typeof data === "string" ? data : data.response || data.message || JSON.stringify(data);
+      if (Array.isArray(serverHistory) && serverHistory.length > 0) {
+        setConversationHistory(serverHistory);
+      } else {
+        setConversationHistory((prev) => [...prev, userMsg, assistantMsg]);
+      }
 
-      setConversationHistory((prev) => [
-        ...prev,
-        { role: "user", content: trimmed },
-        { role: "assistant", content: responseText },
-      ]);
-
-      setAiResponse(responseText);
-      setView(VIEW_RESPONSE);
+      setChatMessages((prev) => [...prev, assistantMsg]);
+      setConversationDone(done);
+      if (done) setShowSummary(true);
     } catch (err) {
       setError(err.message);
-      setView(VIEW_IDLE);
+    } finally {
+      setIsAiTyping(false);
     }
-  }, [message, userId, username, language, conversationHistory]);
+  }, [message, conversationHistory, sendTextToBackend]);
+
+  // ── Chat follow-up messages ────────────────────────────────────
+  const handleSendReply = useCallback(async () => {
+    const trimmed = message.trim();
+    if (!trimmed || isAiTyping) return;
+
+    const userMsg = { role: "user", content: trimmed };
+    setChatMessages((prev) => [...prev, userMsg]);
+    setMessage("");
+    setError(null);
+    setIsAiTyping(true);
+
+    try {
+      const { responseText, done, serverHistory } = await sendTextToBackend(trimmed, conversationHistory);
+
+      const assistantMsg = { role: "assistant", content: responseText };
+
+      if (Array.isArray(serverHistory) && serverHistory.length > 0) {
+        setConversationHistory(serverHistory);
+      } else {
+        setConversationHistory((prev) => [...prev, userMsg, assistantMsg]);
+      }
+
+      setChatMessages((prev) => [...prev, assistantMsg]);
+      setConversationDone(done);
+      if (done) setShowSummary(true);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setIsAiTyping(false);
+    }
+  }, [message, isAiTyping, conversationHistory, sendTextToBackend]);
 
   const handleKeyDown = (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      handleSendText();
+      if (view === VIEW_CHAT) {
+        handleSendReply();
+      } else {
+        handleSendText();
+      }
     }
   };
 
@@ -202,7 +317,7 @@ export default function Dashboard() {
 
   return (
     <SidebarProvider defaultOpen={true}>
-      <AppSidebar userId={userId} />
+      <AppSidebar ref={sidebarRef} userId={userId} />
 
       <SidebarInset className="flex flex-col h-svh overflow-hidden">
         {/* ── Top Bar ──────────────────────────────────────────── */}
@@ -229,37 +344,49 @@ export default function Dashboard() {
             </DropdownMenu>
           </div>
 
-          <DropdownMenu>
-            <DropdownMenuTrigger className="flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-background transition-colors">
-              <div className="w-8 h-8 rounded-full bg-primary-muted flex items-center justify-center">
-                <span className="text-sm font-semibold text-primary">
-                  {username?.charAt(0)?.toUpperCase() || "U"}
-                </span>
-              </div>
-              <span className="text-sm font-medium text-dark hidden sm:inline">{username}</span>
-              <ChevronDown size={14} className="text-text-muted" />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={handleLogout} className="text-urgency-high focus:text-urgency-high">
-                <LogOut size={14} />
-                Log out
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <div className="flex items-center gap-2">
+            {view === VIEW_CHAT && !showSummary && (
+              <button
+                onClick={handleEndChat}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium text-primary hover:bg-primary/10 transition-colors"
+              >
+                <Plus size={14} />
+                New check-in
+              </button>
+            )}
+
+            <DropdownMenu>
+              <DropdownMenuTrigger className="flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-background transition-colors">
+                <div className="w-8 h-8 rounded-full bg-primary-muted flex items-center justify-center">
+                  <span className="text-sm font-semibold text-primary">
+                    {username?.charAt(0)?.toUpperCase() || "U"}
+                  </span>
+                </div>
+                <span className="text-sm font-medium text-dark hidden sm:inline">{username}</span>
+                <ChevronDown size={14} className="text-text-muted" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={handleLogout} className="text-urgency-high focus:text-urgency-high">
+                  <LogOut size={14} />
+                  Log out
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </header>
 
         {/* ── Main Content ────────────────────────────────────── */}
         <main className="flex-1 flex flex-col items-center justify-center px-6 relative overflow-hidden">
           {/* Error banner */}
           {(error || micError) && (
-            <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10 bg-urgency-high-bg border border-urgency-high/20 text-urgency-high text-sm rounded-xl px-4 py-2.5 max-w-md text-center animate-in fade-in slide-in-from-top-2 duration-300">
+            <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10 bg-urgency-high-bg border border-urgency-high/20 text-urgency-high text-sm rounded-xl px-4 py-2.5 max-w-md text-center animate-in fade-in slide-in-from-top-2 duration-200">
               {error || micError}
             </div>
           )}
 
           {/* ── IDLE VIEW ──────────────────────────────────────── */}
           <div
-            className={`flex flex-col items-center gap-6 w-full max-w-2xl transition-all duration-500 ease-out ${
+            className={`flex flex-col items-center gap-6 w-full max-w-2xl transition-all duration-200 ease-out ${
               view === VIEW_IDLE ? "opacity-100 scale-100" : "opacity-0 scale-95 pointer-events-none absolute"
             }`}
           >
@@ -312,9 +439,118 @@ export default function Dashboard() {
             </div>
           </div>
 
+          {/* ── CHAT VIEW ──────────────────────────────────────── */}
+          <div
+            className={`flex flex-col w-full h-full max-w-2xl transition-all duration-200 ease-out ${
+              view === VIEW_CHAT ? "opacity-100" : "opacity-0 pointer-events-none absolute"
+            }`}
+          >
+            {/* Messages thread */}
+            <div className="flex-1 overflow-y-auto py-4 space-y-3 min-h-0">
+              {chatMessages.map((msg, i) => (
+                <div
+                  key={i}
+                  className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+                >
+                  <div
+                    className={`max-w-[80%] px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap ${
+                      msg.role === "user"
+                        ? "bg-primary text-white rounded-2xl rounded-br-sm"
+                        : "bg-surface-elevated border border-border-default text-dark rounded-2xl rounded-bl-sm shadow-card"
+                    }`}
+                  >
+                    {msg.content}
+                  </div>
+                </div>
+              ))}
+
+              {isAiTyping && (
+                <div className="flex justify-start">
+                  <TypingIndicator />
+                </div>
+              )}
+
+              <div ref={chatEndRef} />
+            </div>
+
+            {/* Chat input */}
+            {!conversationDone && !showSummary && (
+              <div className="shrink-0 pb-4 pt-2">
+                <div className="relative bg-surface-elevated border border-border-default rounded-2xl shadow-card overflow-hidden transition-shadow focus-within:shadow-lift focus-within:border-primary/30">
+                  <textarea
+                    ref={chatInputRef}
+                    value={message}
+                    onChange={(e) => setMessage(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    placeholder="Type your reply..."
+                    rows={2}
+                    disabled={isAiTyping}
+                    className="w-full resize-none bg-transparent px-5 pt-3 pb-12 text-sm text-dark placeholder:text-text-muted focus:outline-none disabled:opacity-50"
+                  />
+                  <div className="absolute bottom-3 right-3 flex items-center gap-2">
+                    {message.trim() && !isAiTyping && (
+                      <button
+                        onClick={handleSendReply}
+                        className="p-2 rounded-xl bg-primary text-white hover:bg-primary-hover transition-colors"
+                        aria-label="Send reply"
+                      >
+                        <Send size={16} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ── Summary overlay card ───────────────────────── */}
+            {showSummary && (
+              <div className="absolute inset-0 z-20 flex items-center justify-center bg-dark/30 backdrop-blur-sm animate-in fade-in duration-200">
+                <div className="w-full max-w-sm mx-4 bg-surface-elevated border border-border-default rounded-2xl shadow-lift p-6 space-y-4 animate-in zoom-in-95 duration-200">
+                  <div className="flex items-start justify-between">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-10 h-10 rounded-xl bg-primary-muted flex items-center justify-center">
+                        <MessageSquare size={20} className="text-primary" />
+                      </div>
+                      <div>
+                        <h3 className="text-sm font-semibold text-dark">Check-in Complete</h3>
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          <Clock size={12} className="text-text-muted" />
+                          <span className="text-xs text-text-muted">Just now</span>
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      onClick={handleCloseSummary}
+                      className="p-1.5 rounded-lg text-text-muted hover:text-dark hover:bg-background transition-colors"
+                      aria-label="Close summary"
+                    >
+                      <X size={16} />
+                    </button>
+                  </div>
+
+                  <div className="bg-background rounded-xl p-3.5 space-y-2">
+                    <p className="text-sm font-medium text-dark leading-snug line-clamp-2">
+                      {chatMessages.find((m) => m.role === "user")?.content || "Conversation"}
+                    </p>
+                    <p className="text-xs text-text-muted">
+                      {chatMessages.length} message{chatMessages.length !== 1 ? "s" : ""} exchanged
+                    </p>
+                  </div>
+
+                  <button
+                    onClick={handleCloseSummary}
+                    className="w-full py-2.5 rounded-xl bg-primary text-white text-sm font-medium hover:bg-primary-hover transition-colors"
+                  >
+                    Done
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* ── LISTENING VIEW ─────────────────────────────────── */}
           <div
-            className={`flex flex-col items-center gap-8 w-full max-w-md transition-all duration-500 ease-out ${
+            className={`flex flex-col items-center gap-8 w-full max-w-md transition-all duration-200 ease-out ${
               view === VIEW_LISTENING ? "opacity-100 scale-100" : "opacity-0 scale-95 pointer-events-none absolute"
             }`}
           >
@@ -333,9 +569,9 @@ export default function Dashboard() {
             </button>
           </div>
 
-          {/* ── PROCESSING VIEW ────────────────────────────────── */}
+          {/* ── PROCESSING VIEW (voice only) ───────────────────── */}
           <div
-            className={`flex flex-col items-center gap-6 w-full max-w-md transition-all duration-500 ease-out ${
+            className={`flex flex-col items-center gap-6 w-full max-w-md transition-all duration-200 ease-out ${
               view === VIEW_PROCESSING ? "opacity-100 scale-100" : "opacity-0 scale-95 pointer-events-none absolute"
             }`}
           >
@@ -346,9 +582,9 @@ export default function Dashboard() {
             </p>
           </div>
 
-          {/* ── RESPONSE VIEW ──────────────────────────────────── */}
+          {/* ── RESPONSE VIEW (voice only) ─────────────────────── */}
           <div
-            className={`flex flex-col items-center gap-6 w-full max-w-2xl transition-all duration-500 ease-out ${
+            className={`flex flex-col items-center gap-6 w-full max-w-2xl transition-all duration-200 ease-out ${
               view === VIEW_RESPONSE ? "opacity-100 scale-100" : "opacity-0 scale-95 pointer-events-none absolute"
             }`}
           >
